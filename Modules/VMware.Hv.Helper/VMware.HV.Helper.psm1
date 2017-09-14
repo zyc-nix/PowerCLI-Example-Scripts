@@ -7021,6 +7021,220 @@ function Get-HVMachineSummary {
   return $machineList
 }
 
+function Get-HVMachineInfo {
+<#
+.Synopsis
+   Update Get-HVMachineSummary to include user name for disconnected machine
+
+.DESCRIPTION
+   Queries and returns virtual machines information, the machines list would be determined
+   based on queryable fields poolName, dnsName, machineName, state. When more than one
+   fields are used for query the virtual machines which satisfy all fields criteria would be returned.
+
+.PARAMETER PoolName
+   Pool name to query for.
+   If the value is null or not provided then filter will not be applied,
+   otherwise the virtual machines which has name same as value will be returned.
+
+.PARAMETER MachineName
+   The name of the Machine to query for.
+   If the value is null or not provided then filter will not be applied,
+   otherwise the virtual machines which has display name same as value will be returned.
+
+.PARAMETER DnsName
+   DNS name for the Machine to filter with.
+   If the value is null or not provided then filter will not be applied,
+   otherwise the virtual machines which has display name same as value will be returned.
+
+.PARAMETER State
+   The basic state of the Machine to filter with.
+   If the value is null or not provided then filter will not be applied,
+   otherwise the virtual machines which has display name same as value will be returned.
+
+.PARAMETER SuppressInfo
+   Suppress text info, when no machine found with given search parameters
+
+.PARAMETER HvServer
+    Reference to Horizon View Server to query the virtual machines from. If the value is not passed or null then
+    first element from global:DefaultHVServers would be considered in-place of hvServer
+
+.EXAMPLE
+   Get-HVMachineInfo -PoolName 'ManualPool'
+   Queries VM(s) with given parameter poolName
+
+.EXAMPLE
+   Get-HVMachineInfo -MachineName 'PowerCLIVM'
+   Queries VM(s) with given parameter machineName
+
+.EXAMPLE
+   Get-HVMachineInfo -State CUSTOMIZING
+   Queries VM(s) with given parameter vm state
+
+.EXAMPLE
+   Get-HVMachineInfo -DnsName 'powercli-*'
+   Queries VM(s) with given parameter dnsName with wildcard character *
+
+.OUTPUTS
+  Returns list of objects of type MachineNamesView
+
+.NOTES
+    Author                      : Yanchao Zhang
+    Author email                : yanchaozhang@vmware.com
+    Version                     : 0.1
+
+    ===Tested Against Environment====
+    Horizon View Server Version : 7.3.0
+    PowerCLI Version            : PowerCLI 6.5.1
+    PowerShell Version          : 5.1
+#>
+
+  [CmdletBinding(
+    SupportsShouldProcess = $true,
+    ConfirmImpact = 'High'
+  )]
+
+  param(
+    [Parameter(Mandatory = $false)]
+    [string]
+    $PoolName,
+
+    [Parameter(Mandatory = $false)]
+    [string]
+    $MachineName,
+
+    [Parameter(Mandatory = $false)]
+    [string]
+    $DnsName,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('PROVISIONING','PROVISIONING_ERROR','WAIT_FOR_AGENT','CUSTOMIZING',
+    'DELETING','MAINTENANCE','ERROR','PROVISIONED','AGENT_UNREACHABLE','UNASSIGNED_USER_CONNECTED',
+    'CONNECTED','UNASSIGNED_USER_DISCONNECTED','DISCONNECTED','AGENT_ERR_STARTUP_IN_PROGRESS',
+    'AGENT_ERR_DISABLED','AGENT_ERR_INVALID_IP','AGENT_ERR_NEED_REBOOT','AGENT_ERR_PROTOCOL_FAILURE',
+    'AGENT_ERR_DOMAIN_FAILURE','AGENT_CONFIG_ERROR','ALREADY_USED','AVAILABLE','IN_PROGRESS','DISABLED',
+    'DISABLE_IN_PROGRESS','VALIDATING','UNKNOWN')]
+    [string]
+    $State,
+
+    [Parameter(Mandatory = $false)]
+    [string]
+    $JsonFilePath,
+
+	[Parameter(Mandatory = $false)]
+	[boolean]
+	$SuppressInfo = $false,
+
+    [Parameter(Mandatory = $false)]
+    $HvServer = $null
+  )
+  class AgentInfo {
+    [string]$Name
+    [string]$DnsName
+    [string]$Pool
+    [string]$UserName
+    [string]$BasicState
+    [string]$AgentBuildNumber
+    [string]$HostName
+    [string]$DatastorePaths
+  }
+
+  $services = Get-ViewAPIService -hvServer $hvServer
+  if ($null -eq $services) {
+    Write-Error "Could not retrieve ViewApi services from connection object"
+    break
+  }
+
+  $machineList = Find-HVMachine -Param $PSBoundParameters
+  if (!$machineList -and !$SuppressInfo) {
+    Write-Host "Get-HVMachineInfo: No machine(s) found with given search parameters"
+  }
+  $agentList = @()
+  $sessionView = Get-HVQueryResult -EntityType SessionLocalSummaryView
+  $machineList | ForEach-Object {
+    $machine = $_
+    $agent = New-Object -TypeName AgentInfo
+    $agent.Name = $machine.Base.Name 
+    $agent.DnsName = $machine.Base.DnsName 
+    $agent.Pool= $machine.NamesData.DesktopName
+    $agent.BasicState= $machine.Base.BasicState
+    $agent.AgentBuildNumber= $machine.Base.AgentBuildNumber
+    $agent.HostName= $machine.ManagedMachineNamesData.HostName
+    $agent.DatastorePaths= $machine.ManagedMachineNamesData.DatastorePaths
+    if ($_.base.basicState -eq 'DISCONNECTED') {
+      ForEach ( $session in $sessionView ) {
+        if ($machine.base.dnsName -eq $session.namesdata.machineOrRdsServerdns) {
+            $agent.UserName = $session.namesdata.username
+        }
+      }
+    }
+    $agentList += $agent
+  }
+
+  return $agentList
+}
+
+function Get-HVPoolUser {
+<#
+.Synopsis
+   Gets current user(s) of a particular Pool
+
+.DESCRIPTION
+   Queries and returns current user(s) of a given pool
+
+.PARAMETER PoolName
+   Pool name to query for.
+   If the value is null or not provided then filter will not be applied,
+   otherwise all the users for a given pool will be returned.
+
+.PARAMETER HvServer
+    Reference to Horizon View Server to query the virtual machines from. If the value is not passed or null then
+    first element from global:DefaultHVServers would be considered in-place of hvServer
+
+.EXAMPLE
+   Get-HVPoolUser -PoolName 'ManualPool'
+   Queries Users(s) with given parameter poolName
+
+.OUTPUTS
+  Returns list of users
+
+.NOTES
+    Author                      : Yanchao Zhang
+    Author email                : yanchaozhang@vmware.com
+    Version                     : 0.1
+
+    ===Tested Against Environment====
+    Horizon View Server Version : 7.3.0
+    PowerCLI Version            : PowerCLI 6.5, PowerCLI 6.5.1
+    PowerShell Version          : 5.0
+#>
+
+  param(
+    [Parameter(Mandatory = $false)]
+    [string]
+    $PoolName,
+
+    [Parameter(Mandatory = $false)]
+    $HvServer = $null
+  )
+
+  $services = Get-ViewAPIService -hvServer $hvServer
+  if ($null -eq $services) {
+    Write-Error "Could not retrieve ViewApi services from connection object"
+    break
+  }
+  $machineList = Get-HVMachine -PoolName $PoolName
+  $sessionList = ForEach ( $hm in $machineList ) {
+    $services.Session.Session_GetLocalSummaryView($hm.Base.Session)
+  }
+  $userList = ForEach ( $hs in $sessionList ) {
+    $services.AdminUserOrGroup.AdminUserOrGroup_Get($hs.ReferenceData.user)
+  }
+  $nameList = ForEach ($_ in $userList) {
+    $_.Base.Name
+  }
+  return $nameList
+}
+
 function Get-HVPoolSpec {
 <#
 .Synopsis
@@ -8240,6 +8454,128 @@ PARAMETER Key
   
 }
 
+Function Stop-HVSession()
+{
+<#
+.PARAMETER PoolName
+    Name of the pool session to be stopped(disconnect/logoff)
+
+.PARAMETER Pool
+    Object(s) of the pool to be stopped
+
+.PARAMETER HvServer
+    View API service object of Connect-HVServer cmdlet.
+
+.PARAMETER action
+    actions, either disconnect or logoff
+
+.EXAMPLE
+   Stop-HvSession -HvServer $hvServer -PoolName 'FullClone'
+   Logoff Session of pool with given parameters PoolName etc.
+
+.EXAMPLE
+   $pool_array | Stop-HvSession -HvServer $hvServer  -Action=logoff
+   Logoff specified pool
+
+.OUTPUTS
+   None
+
+.NOTES
+    Author                      : Yanchao Zhang
+    Author email                : yanchaozhang@vmware.com
+    Version                     : 0.1
+
+    ===Tested Against Environment====
+    Horizon View Server Version : 7.3.0
+    PowerCLI Version            : PowerCLI 6.5.1
+    PowerShell Version          : 5.1
+#>
+
+#>
+  param(
+    [Parameter(Mandatory = $true,ParameterSetName = 'option')]
+    [string] $poolName,
+
+    # PoolObject
+    [Parameter(ValueFromPipeline = $true,ParameterSetName = 'pipeline')]
+    $Pool,
+
+    [Parameter(Mandatory = $false)]
+    $HvServer = $null,
+
+    [Parameter(Mandatory = $false)]
+    $Action = "logoff"
+  )
+
+  begin {
+    $hvServer = $Global:DefaultHVServers[0]
+    $services = Get-ViewAPIService -hvServer $hvServer
+    if ($null -eq $services) {
+      Write-Error "Could not retrieve ViewApi services from connection object"
+      break
+    }
+  }
+
+  process {
+    $poolList = @()
+    if ($poolName) {
+      try {
+        $myPools = Get-HVPoolSummary -poolName $poolName -suppressInfo $true -hvServer $hvServer
+      } catch {
+        Write-Error "Make sure Get-HVPoolSummary advanced function is loaded, $_"
+        break
+      }
+      if ($myPools) {
+        foreach ($poolObj in $myPools) {
+          $poolList += @{id = $poolObj.id; name = $poolObj.desktopSummaryData.name}
+        }
+      } else {
+        Write-Error "No desktopsummarydata found with pool name: [$pool]"
+        break
+      }
+    } elseif ($PSCmdlet.MyInvocation.ExpectingInput -or $Pool) {
+      foreach ($item in $pool) {
+        if ($item.GetType().name -eq 'DesktopSummaryView') {
+          $poolList += @{id = $item.id; name = $item.desktopSummaryData.name}
+        }
+        elseif ($item.GetType().name -eq 'DesktopInfo') {
+          $poolList += @{id = $item.id; name = $item.base.name}
+        }
+        else {
+          Write-Error "In pipeline did not get object of expected type DesktopSummaryView/DesktopInfo"
+          [System.gc]::collect()
+          return
+        }
+      }
+    }
+    foreach ($item in $poolList) {
+      #Terminate session
+      $queryResults = Get-HVQueryResult MachineSummaryView (Get-HVQueryFilter base.desktop -eq $item.id)
+      $sessions += $queryResults.base.session
+      if ($null -ne $sessions) {
+        $session_service_helper = New-Object VMware.Hv.SessionService
+        try {
+          if ($Action -eq 'logoff') {
+            Write-Host "Logoff Sessions, it may take few seconds..."
+            $session_service_helper.Session_LogoffSessionsForced($services,$sessions)
+          }
+          else {
+            Write-Host "Disconnect Sessions, it may take few seconds..."
+            $session_service_helper.Session_DisconnectSessions($services,$sessions)
+          }
+        } catch {
+          Write-Host "Warning: " + $Action " Session failed."
+        }
+      } else {
+        Write-Host "No session found."
+      }
+    }
+  }
+  end {
+    [System.gc]::collect()
+  }
+}
+
 function New-HVGlobalEntitlement {
 
  <#
@@ -9371,4 +9707,4 @@ function Set-HVGlobalSettings {
   }
 }
 
-Export-ModuleMember Add-HVDesktop,Add-HVRDSServer,Connect-HVEvent,Disconnect-HVEvent,Get-HVPoolSpec,Get-HVInternalName, Get-HVEvent,Get-HVFarm,Get-HVFarmSummary,Get-HVPool,Get-HVPoolSummary,Get-HVMachine,Get-HVMachineSummary,Get-HVQueryResult,Get-HVQueryFilter,New-HVFarm,New-HVPool,Remove-HVFarm,Remove-HVPool,Set-HVFarm,Set-HVPool,Start-HVFarm,Start-HVPool,New-HVEntitlement,Get-HVEntitlement,Remove-HVEntitlement, Set-HVMachine, New-HVGlobalEntitlement, Remove-HVGlobalEntitlement, Get-HVGlobalEntitlement, Get-HVPodSession, Set-HVApplicationIcon, Remove-HVApplicationIcon, Get-HVGlobalSettings, Set-HVGlobalSettings
+Export-ModuleMember Add-HVDesktop,Add-HVRDSServer,Connect-HVEvent,Disconnect-HVEvent,Get-HVPoolSpec,Get-HVInternalName, Get-HVEvent,Get-HVFarm,Get-HVFarmSummary,Get-HVPool,Get-HVPoolSummary,Get-HVMachine,Get-HVMachineSummary,Get-HVQueryResult,Get-HVQueryFilter,New-HVFarm,New-HVPool,Remove-HVFarm,Remove-HVPool,Set-HVFarm,Set-HVPool,Start-HVFarm,Start-HVPool,New-HVEntitlement,Get-HVEntitlement,Remove-HVEntitlement, Set-HVMachine, New-HVGlobalEntitlement, Remove-HVGlobalEntitlement, Get-HVGlobalEntitlement, Get-HVPodSession, Set-HVApplicationIcon, Remove-HVApplicationIcon, Get-HVGlobalSettings, Set-HVGlobalSettings, Get-HVPoolUser, Get-HVMachineInfo, Stop-HVSession
